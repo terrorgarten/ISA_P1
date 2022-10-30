@@ -2,122 +2,105 @@
 // Created by terrorgarten on 20.10.22.
 //
 
-#include "stdlib.h"
-#include "pcap.h"
-#include "arpa/inet.h"
-#include "getopt.h"
-#include "netinet/"
-#include "vector"
+#include <stdlib.h>
+#include <pcap/pcap.h>
+#include <arpa/inet.h>
+#include <getopt.h>
+#include <vector>
+#include <pcap.h>
+#include <stdlib.h>
+#include <iostream>
+#include <string>
 
+//FIXME ?
 #define OPT1 0
+//DEFINITIONS
+#define DEFAULT_FILE "-"
+#define DEFAULT_COLLECTOR_IP "127.0.0.1:2055"
+#define DEFAULT_ACTIVE_TIMER 60
+#define DEFAULT_INACTIVE_TIMER 10
+#define DEFAULT_FLOW_CACHE 1024
 
-namespace std;
+#define FILE_ERROR 1
 
-int main(int argc, char **argv)
-{
-    parse_args(argc, argv);
-    return 0;
-}
+//NAMESPACE
+using namespace std;
 
-char* parse_args(int argc, char ** argv)
-{
-    //define flags
+//GLOBAL VARIABLES
+pcap_t *pcap_capture;
+struct pcap_pkthdr header;
+const u_char *packet;
+char errbuf[PCAP_ERRBUF_SIZE];
 
-    //options
-    static struct option long_opt[] =
-            {
-                    //setters
-                    {"interface", optional_argument, NULL, 'i'},
-                    {"num", required_argument, NULL, 'n'},
-                    //flags
-                    {"tcp", no_argument, &tcp_flag, 1},
-                    {"udp", no_argument, &udp_flag, 1},
-                    {"arp", no_argument, &arp_flag, 1},
-                    {"icmp", no_argument, &icmp_flag, 1},
-                    {0, 0, 0, 0}
-            };
+int main(int argc, char **argv) {
 
-    //short options
-    static char short_opt[] = "i::p:tun:h";
+    //ARG PARSING
+    //Parameter init & default set
+    string  src_filename = DEFAULT_FILE,\
+            collector_ip = DEFAULT_COLLECTOR_IP;
+    int active_timer     = DEFAULT_ACTIVE_TIMER,\
+        inactive_timer   = DEFAULT_INACTIVE_TIMER,\
+        flow_cache       = DEFAULT_FLOW_CACHE;
 
-    //cmd line argument
-    int cla;
-    //index
-    extern int optind;
-    //cla loading loop
-    while((cla = getopt_long(argc, argv, short_opt, long_opt, &optind)) != -1)
-    {
-        char* tmp_optarg = NULL;
-        switch (cla)
-        {
-            //flag set
+    int opt;
+    while ((opt = getopt(argc, argv, "f:c:a:i:m:h")) != -1) {
+        switch (opt) {
             case 0:
                 break;
-            case 'i': //inspired by https://stackoverflow.com/questions/1052746/getopt-does-not-parse-optional-arguments-to-parameters
-                //check if the option argument exits
-                if(!optarg && argv[optind] != NULL && '-' != argv[optind][0])
-                {
-                    //if so, load it to the tmp var
-                    tmp_optarg = argv[optind];
-                }
-                //check if load occured
-                if(tmp_optarg){
-                    //save the option argument int othe interface variable
-                    interface.append(tmp_optarg);
-                }
-                    // -i was specified alone, special case
-                else
-                {
-                    // -i without param -> print interfaces
-                    print_interfaces();
-                }
+            case 'f':
+                src_filename = optarg;
                 break;
-
-            case 'p':
-                //load port number into the specifier var
-                port = stoi(optarg);
-                //printf("port: %d", port);
-                //cout << "Port: " << port << endl;
+            case 'c':
+                collector_ip = optarg;
                 break;
-
-            case 't':
-                //set TCP flag
-                tcp_flag = 1;
-                //cout << "TCP set" << endl;
+            case 'a':
+                active_timer = atoi(optarg);
                 break;
-
-            case 'u':
-                //set UDP flag
-                udp_flag = 1;
-                //cout << "UDP set" << endl;
+            case 'i':
+                inactive_timer = atoi(optarg);
                 break;
-
-            case 'n':
-                try
-                {
-                    packet_num = stoi(optarg);
-                }
-                catch(...)
-                {
-                    cerr << "Invalid parameter for -n. Use only positive numbers" << endl;
-                    exit(ERROR);
-                }
-                if(packet_num <= 0)
-                {
-                    cerr << "Invalid parameter for -n. Use only positive numbers" << endl;
-                    exit(ERROR);
-                }
+            case 'm':
+                flow_cache = atoi(optarg);
                 break;
             case 'h':
-                print_help(argv[0]);
+                cout << "USAGE:" << endl << "-f\t Set source file" << endl << "-c\t Set NetFlow collector IP" << endl << "-a\t Set active timer" << "-i\t Set inactive timer" << endl << "-m\t Set cache memory size" << endl;
                 break;
             case '?':
-            default:
-                cout << "Uknown option. use -h for help.";
+                cout << "Invalid argument has been passed. Please use -h to print usage." << endl;
+                break;
+            //FIXME dead code
+            case -1:
                 break;
         }
     }
+    //TODO REMOVE DEBUG
+    cout << src_filename << endl << collector_ip << endl << active_timer << endl << inactive_timer << endl << flow_cache << endl;
+
+    //open capture
+    pcap_t* pcap_file = pcap_open_offline(src_filename.c_str(), errbuf);
+    if(!pcap_file){
+        cout << "Could not open the input file \"" << src_filename << "\". Please enter a valid capture file name." << endl;
+        return FILE_ERROR;
+    }
+    /* Grab a packet */
+    while((packet = pcap_next(pcap_file, &header))){
+        printf("Jacked a packet with length of [%d]\n", header.len);
+    }
+
+    /* Print its length */
+    /* And close the session */
+    pcap_close(pcap_file);
+    return(0);
+
+
+
+
+
+    return 0;
+
+
 }
+
 
 
 /**
