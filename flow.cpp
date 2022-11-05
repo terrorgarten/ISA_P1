@@ -49,17 +49,15 @@
 #define FILE_ERROR 1
 #define INVALID_IP_PROTOCOL 2
 
-//NAMESPACE
 using namespace std;
 
 
-//STRUCTURES
 /**
  * Structure for packet/flow data
  */
 struct packet_data
 {
-    struct tm time_stamp;
+    uint32_t time_stamp;
     uint8_t source_mac[ETH_ALEN];
     uint8_t destination_mac[ETH_ALEN];
     in_addr source_ip;
@@ -68,8 +66,44 @@ struct packet_data
     uint16_t destination_port;
     uint8_t type_of_service;
     uint8_t ip_protocol;
+    uint8_t tos;
 };
+
+/**
+ * @name flow_data
+ * @note Structure for saving flow data
+ * Fields marked as zero fields are not to be used in this project
+ */
+struct flow_data
+{
+    in_addr source_ip;
+    in_addr destination_ip;
+    uint32_t nexthop;   //ZERO FIELD
+    uint16_t input;     //ZERO FIELD
+    uint16_t output;    //ZERO FIELD
+    uint32_t packet_count;
+    uint32_t octets_count;
+    uint32_t first_time;
+    uint32_t last_time;
+    uint16_t source_port;
+    uint16_t destination_port;
+    uint8_t pad1;           //ZERO FIELD
+    uint8_t tcp_flags;
+    uint8_t ip_protocol;
+    uint8_t tos;
+    uint16_t source_as;     //ZERO FIELD
+    uint16_t destination_as;//ZERO FIELD
+    uint8_t source_mask;    //ZERO FIELD
+    uint8_t destination_mask;//ZERO FIELD
+    uint16_t pad2;          //ZERO FIELD
+};
+
+
+
+//NAMESPACE
+//STRUCTURES
 typedef struct packet_data packet_data;
+typedef struct flow_data flow_data;
 
 /**
  * key_t is an unique key for a flow stored in a map
@@ -81,13 +115,12 @@ typedef tuple<string, string, uint16_t, uint16_t, uint8_t> map_key_t;
 
 
 //FUNCTIONS
+void print_time(uint32_t tm_sec);
 packet_data parse_packet(const struct pcap_pkthdr* header, const u_char *packet);
-map_key_t get_flow_key(packet_data pd){
-    string source_ip = inet_ntoa(pd.source_ip);
-    string destination_ip = inet_ntoa(pd.destination_ip);
-    map_key_t key(source_ip, destination_ip, pd.source_port, pd.destination_port, pd.ip_protocol);
-    return key;
-};
+map_key_t get_flow_key(packet_data pd);
+void init_flow(packet_data* packet, flow_data* flow);
+void export_flow(flow_data flow);
+
 
 //void add_flow(map<map_key_t, packet_data> flow_map, packet_data pd){
 //    map_key_t key = get_flow_key(pd);
@@ -155,16 +188,72 @@ int main(int argc, char **argv) {
         return FILE_ERROR;
     }
 
-    map<map_key_t, packet_data> flow_map;
+    //init main flow-storing structure
+    map<map_key_t, flow_data> flow_map;
+
     int ctr = 0;
-    /* Grab a packet */
+    //strat reading packets
     while((packet = pcap_next(pcap_file, &header))){
-        ctr++;
-        printf("Jacked a packet with length of [%d]\n", header.len);
+        ctr++; //FIXME REMOVE FOR SHARP VERSION
+
+        //get parsed packet data
         packet_data captured_packet = parse_packet(&header, packet);
+        //initialize flow key
         map_key_t flow_key = get_flow_key(captured_packet);
-        flow_map[flow_key] = captured_packet;
+        //update last time stamp - virtual current time
+        uint32_t curr_time = captured_packet.time_stamp;
+
+
+
         cout << ctr << endl;
+        print_time(curr_time);
+
+
+        //auto existing_flow_time = existing_flow->second.time_stamp;
+
+        //export timed out flows
+//        for (auto it = flow_map.cbegin(); it != flow_map.cend(); it++)
+//        {
+//            //check expiration
+//            if((curr_time - it->second.first_time) >= active_timer || (curr_time - it->second.last_time >= inactive_timer)){
+//                export_flow(it->second);
+//                flow_map.erase(it);
+//            }
+//        }
+
+        for (auto it = flow_map.cbegin(), next_it = it; it != flow_map.cend(); it = next_it)
+        {
+            ++next_it;
+            if((curr_time - it->second.first_time) >= active_timer || (curr_time - it->second.last_time >= inactive_timer)){
+                export_flow(it->second);
+                flow_map.erase(it);
+            }
+        }
+
+        auto existing_flow = flow_map.find(flow_key);
+
+        //Create new flow record
+        if(existing_flow == flow_map.end()){
+            flow_data new_flow;
+            init_flow(&captured_packet, &new_flow);
+            flow_map[flow_key] = new_flow;
+            cout << "ADDED!" << endl;
+        }
+        //Update flow record: updatujete v existující flow Last, dPkts, dOctets a tcp_flags (1.)
+        else{
+            existing_flow->second.last_time = captured_packet.time_stamp;
+//            auto tt_curr_time = mktime(&curr_time);
+//            auto tt_existing_flow_time = mktime(&existing_flow_time);
+//            cout << tt_curr_time - tt_existing_flow_time << endl;
+//            if((tt_curr_time - tt_existing_flow_time) >= active_timer){
+//                cout << "DING DING DING-----------------------------------------------------ACTIVE TIMEOUT" << endl;
+//            }
+           cout << "EXISTS! - TIMESTAMPS:" << endl << "Saved: ";
+//            print_time(&(flow_map.find(flow_key)->second.first_time));
+//            cout << endl << "Incoming: ";
+//            print_time(&curr_time);
+        }
+
     }
 
 
@@ -173,6 +262,47 @@ int main(int argc, char **argv) {
     pcap_close(pcap_file);
     return(0);
 }
+void export_flow(flow_data flow){
+    cout << "                      ->>> EXPORTED" << endl;
+}
+
+void init_flow(packet_data* packet, flow_data* flow){
+    //load data from packet
+    flow->source_ip = packet->source_ip;
+    flow->destination_ip = packet->destination_ip;
+    flow->source_port = packet->source_port;
+    flow->ip_protocol = packet->ip_protocol;
+    flow->tos = packet->type_of_service;
+    flow->first_time = packet->time_stamp;
+    flow->last_time = packet->time_stamp; //TODO CHECK JESTLI TOTO NEVYHAZUJE ZBYTECNE
+    //zero fields
+    flow->nexthop =\
+    flow->input =\
+    flow->output =\
+    flow->pad1 =\
+    flow->source_as =\
+    flow->destination_as =\
+    flow->source_mask =\
+    flow->destination_mask =\
+    flow->pad2 = 0;
+}
+
+
+
+void print_time(uint32_t tm_sec)
+{
+//    time_t* time = &tm_sec;
+//    char time_sec_char[TIME_BUFF_SIZE];
+//    strftime(time_sec_char, TIME_BUFF_SIZE, "%d.%m.%Y %H:%M:%S", localtime(*time));
+//    cout << "TIMESTAMP: " << tm_sec /*<< ":"<< time_usec_char*/ << endl;
+}
+
+map_key_t get_flow_key(packet_data pd){
+    string source_ip = inet_ntoa(pd.source_ip);
+    string destination_ip = inet_ntoa(pd.destination_ip);
+    map_key_t key(source_ip, destination_ip, pd.source_port, pd.destination_port, pd.ip_protocol);
+    return key;
+};
 
 
 packet_data parse_packet(const struct pcap_pkthdr* header, const u_char *packet)
@@ -184,9 +314,9 @@ packet_data parse_packet(const struct pcap_pkthdr* header, const u_char *packet)
     struct tcphdr *tcp_hdr;
     packet_data new_packet;
 
-    //format and print timestamp
-    struct tm *tm_sec = localtime(&(header->ts.tv_sec));
-    new_packet.time_stamp = *tm_sec;
+    //convert to miliseconds
+    uint32_t tm_sec = header->ts.tv_sec * 1000 + header->ts.tv_usec/1000;
+    new_packet.time_stamp = tm_sec;
 
     //init ether header struct
     struct ether_header *eth_header = (ether_header*)packet;
@@ -204,6 +334,7 @@ packet_data parse_packet(const struct pcap_pkthdr* header, const u_char *packet)
     new_packet.source_ip = ip->ip_src;
     new_packet.destination_ip = ip->ip_src;
     new_packet.ip_protocol = ip->ip_p;
+    new_packet.tos = ip->ip_tos;
     switch(ip->ip_p){
         case IPPROTO_TCP:
             tcp_hdr = (struct tcphdr*)(packet + SIZE_ETHERNET + ip_hdr_len);
