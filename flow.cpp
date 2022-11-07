@@ -26,6 +26,7 @@
 //DEBUG MACRO
 #define DEBUG_BUILD 1
 #ifdef DEBUG_BUILD
+//TODO Remove
 #   define DEBUG(x) do { cout << #x << " " << x } while (0)
 #else
 #  define DEBUG(x) do {} while (0)
@@ -43,7 +44,7 @@
 
     //TIME
 #define TIME_BUFF_SIZE 30
-
+#define SEC_TO_MSEC 1000
 
 //ERRORS
 #define FILE_ERROR 1
@@ -67,6 +68,8 @@ struct packet_data
     uint8_t type_of_service;
     uint8_t ip_protocol;
     uint8_t tos;
+    uint8_t tcp_flags;
+    uint32_t ip_hdr_len;
 };
 
 /**
@@ -82,7 +85,7 @@ struct flow_data
     uint16_t input;     //ZERO FIELD
     uint16_t output;    //ZERO FIELD
     uint32_t packet_count;
-    uint32_t octets_count;
+    uint32_t ip_header_total_size;
     uint32_t first_time;
     uint32_t last_time;
     uint16_t source_port;
@@ -110,32 +113,21 @@ typedef struct flow_data flow_data;
  */
 typedef tuple<string, string, uint16_t, uint16_t, uint8_t> map_key_t;
 
-;
-
-
 
 //FUNCTIONS
-void print_time(uint32_t tm_sec);
+void print_flow_id(map_key_t flow_key);
 packet_data parse_packet(const struct pcap_pkthdr* header, const u_char *packet);
 map_key_t get_flow_key(packet_data pd);
 void init_flow(packet_data* packet, flow_data* flow);
 void export_flow(flow_data flow);
 
 
-//void add_flow(map<map_key_t, packet_data> flow_map, packet_data pd){
-//    map_key_t key = get_flow_key(pd);
-//    flow_map.insert({key, pd});
-//}
 
 //GLOBAL VARIABLES
 pcap_t *pcap_capture;
 struct pcap_pkthdr header;
 const u_char *packet;
 char errbuf[PCAP_ERRBUF_SIZE];
-
-
-
-
 
 int main(int argc, char **argv) {
 
@@ -192,9 +184,11 @@ int main(int argc, char **argv) {
     map<map_key_t, flow_data> flow_map;
 
     int ctr = 0;
-    //strat reading packets
+    int exp_ctr = 0;
+
+    //start reading packets
     while((packet = pcap_next(pcap_file, &header))){
-        ctr++; //FIXME REMOVE FOR SHARP VERSION
+         //FIXME REMOVE FOR SHARP VERSION
 
         //get parsed packet data
         packet_data captured_packet = parse_packet(&header, packet);
@@ -203,58 +197,50 @@ int main(int argc, char **argv) {
         //update last time stamp - virtual current time
         uint32_t curr_time = captured_packet.time_stamp;
 
-
-
-        cout << ctr << endl;
-        print_time(curr_time);
-
-
-        //auto existing_flow_time = existing_flow->second.time_stamp;
-
-        //export timed out flows
-//        for (auto it = flow_map.cbegin(); it != flow_map.cend(); it++)
-//        {
-//            //check expiration
-//            if((curr_time - it->second.first_time) >= active_timer || (curr_time - it->second.last_time >= inactive_timer)){
-//                export_flow(it->second);
-//                flow_map.erase(it);
-//            }
-//        }
-
+        //go through flows and check their expiration
         for (auto it = flow_map.cbegin(), next_it = it; it != flow_map.cend(); it = next_it)
         {
             ++next_it;
-            if((curr_time - it->second.first_time) >= active_timer || (curr_time - it->second.last_time >= inactive_timer)){
+            if((curr_time - it->second.first_time) > (active_timer * SEC_TO_MSEC) || (curr_time - it->second.last_time > (inactive_timer * SEC_TO_MSEC))){
+                cout << "AT Erase " << curr_time - it->second.first_time << " ? " << active_timer * SEC_TO_MSEC << " IT Erase " << curr_time - it->second.last_time << " ? " << inactive_timer * SEC_TO_MSEC  << endl;
                 export_flow(it->second);
                 flow_map.erase(it);
+                exp_ctr++;
             }
         }
 
+        //search for a flow record in the storing map
         auto existing_flow = flow_map.find(flow_key);
 
         //Create new flow record
         if(existing_flow == flow_map.end()){
+            ctr++;
             flow_data new_flow;
             init_flow(&captured_packet, &new_flow);
             flow_map[flow_key] = new_flow;
             cout << "ADDED!" << endl;
+            print_flow_id(flow_key);
         }
-        //Update flow record: updatujete v existující flow Last, dPkts, dOctets a tcp_flags (1.)
+        //Update flow record
         else{
             existing_flow->second.last_time = captured_packet.time_stamp;
-//            auto tt_curr_time = mktime(&curr_time);
-//            auto tt_existing_flow_time = mktime(&existing_flow_time);
-//            cout << tt_curr_time - tt_existing_flow_time << endl;
-//            if((tt_curr_time - tt_existing_flow_time) >= active_timer){
-//                cout << "DING DING DING-----------------------------------------------------ACTIVE TIMEOUT" << endl;
-//            }
-           cout << "EXISTS! - TIMESTAMPS:" << endl << "Saved: ";
-//            print_time(&(flow_map.find(flow_key)->second.first_time));
-//            cout << endl << "Incoming: ";
-//            print_time(&curr_time);
+            existing_flow->second.ip_header_total_size += captured_packet.ip_hdr_len;
+            existing_flow->second.packet_count++;
+            existing_flow->second.tcp_flags |= captured_packet.tcp_flags;
+            cout << "EXISTS!" << endl;
+            print_flow_id(flow_key);
         }
-
     }
+    //export the remaining flows
+    for (auto it = flow_map.cbegin(), next_it = it; it != flow_map.cend(); it = next_it)
+    {
+        ++next_it;
+        export_flow(it->second);
+        cout<< "END EXPORT ";
+        exp_ctr++;
+    }
+
+    cout << "FLOWS: " << ctr << " EXPORTED: " << exp_ctr << endl;
 
 
     /* Print its length */
@@ -275,6 +261,9 @@ void init_flow(packet_data* packet, flow_data* flow){
     flow->tos = packet->type_of_service;
     flow->first_time = packet->time_stamp;
     flow->last_time = packet->time_stamp; //TODO CHECK JESTLI TOTO NEVYHAZUJE ZBYTECNE
+    flow->packet_count = 1; //initiating for first packet
+    flow->ip_header_total_size = packet->ip_hdr_len;
+    flow->tcp_flags = packet->tcp_flags;
     //zero fields
     flow->nexthop =\
     flow->input =\
@@ -289,8 +278,10 @@ void init_flow(packet_data* packet, flow_data* flow){
 
 
 
-void print_time(uint32_t tm_sec)
+void print_flow_id(map_key_t flow_key)
 {
+    cout << get<0>(flow_key) << "\t" << get<1>(flow_key) << "\t" << get<2>(flow_key) << "\t" << get<3>(flow_key) << "\t" << get<4>(flow_key) << endl << endl;
+
 //    time_t* time = &tm_sec;
 //    char time_sec_char[TIME_BUFF_SIZE];
 //    strftime(time_sec_char, TIME_BUFF_SIZE, "%d.%m.%Y %H:%M:%S", localtime(*time));
@@ -309,7 +300,7 @@ packet_data parse_packet(const struct pcap_pkthdr* header, const u_char *packet)
 {
     //init structs  see web for constants
     struct ip *ip;
-    int ip_hdr_len;
+    uint32_t ip_hdr_len;
     struct udphdr *udp_hdr;
     struct tcphdr *tcp_hdr;
     packet_data new_packet;
@@ -329,17 +320,21 @@ packet_data parse_packet(const struct pcap_pkthdr* header, const u_char *packet)
 
     //fill ip data
     ip = (struct ip*)(packet + SIZE_ETHERNET);
-    ip_hdr_len = ip->ip_p * 4;
+    ip_hdr_len = ip->ip_hl * 4;
 
+    new_packet.ip_hdr_len = ip_hdr_len;
     new_packet.source_ip = ip->ip_src;
     new_packet.destination_ip = ip->ip_src;
     new_packet.ip_protocol = ip->ip_p;
     new_packet.tos = ip->ip_tos;
+
+
     switch(ip->ip_p){
         case IPPROTO_TCP:
             tcp_hdr = (struct tcphdr*)(packet + SIZE_ETHERNET + ip_hdr_len);
             new_packet.source_port = tcp_hdr->th_sport;
             new_packet.destination_port = tcp_hdr->th_dport;
+            new_packet.tcp_flags = tcp_hdr->th_flags;
             break;
         case IPPROTO_UDP:
             udp_hdr = (struct udphdr*)(packet + SIZE_ETHERNET + ip_hdr_len);
@@ -386,6 +381,10 @@ packet_data parse_packet(const struct pcap_pkthdr* header, const u_char *packet)
  *
  *
  *              !!TCP - nese info o informaci spojeni - muzes ho ukoncit driv, ale asi to nebude potreba protoze to zvladne time ouit. NEKDO TO ALE MUZE OJEBAT
+ *
+ *
+ *              TODO
+ *              Přidat TCP flags, packetcount, doctets
  *
  *
  *
