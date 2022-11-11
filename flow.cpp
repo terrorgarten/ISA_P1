@@ -11,9 +11,10 @@
 #include <pcap.h>
 #include <stdlib.h>
 #include <time.h>
+#include <stdio.h>
 #include <iostream>
 #include <map>
-#include <string>
+#include <string.h>
 #include <netinet/if_ether.h>
 #include <arpa/inet.h>	        //misc, ntohs ntohl
 #include <netinet/ether.h> 	    //arp, ether
@@ -22,6 +23,13 @@
 #include <netinet/ip_icmp.h>	//ipv4, icmp
 #include <netinet/ip.h>
 #include <netinet/udp.h>
+#include <stdlib.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <unistd.h>
+#include <netdb.h>
+#include <err.h>
+
 
 //DEBUG MACRO
 #define DEBUG_BUILD 1
@@ -35,10 +43,12 @@
 //DEFINITIONS
     //ARGS
 #define DEFAULT_FILE "-"
-#define DEFAULT_COLLECTOR_IP "127.0.0.1:2055"
+#define DEFAULT_COLLECTOR_IP "127.0.0.1"
+#define DEFAULT_COLLECTOR_PORT "2055"
 #define DEFAULT_ACTIVE_TIMER 60
 #define DEFAULT_INACTIVE_TIMER 10
 #define DEFAULT_FLOW_CACHE 1024
+
     //HEADER SIZES
 #define SIZE_ETHERNET 14
 
@@ -46,11 +56,18 @@
 #define TIME_BUFF_SIZE 30
 #define SEC_TO_MSEC 1000
 
-//ERRORS
+    //ERRORS
 #define FILE_ERROR 1
 #define INVALID_IP_PROTOCOL 2
+#define INVALID_PORT 3
+#define INVALID_C_ARG 4
 
+    //EXPORT BUFFER
+#define BUFFER 1024
+
+//namespace
 using namespace std;
+
 
 
 /**
@@ -59,8 +76,8 @@ using namespace std;
 struct packet_data
 {
     uint32_t time_stamp;
-    uint8_t source_mac[ETH_ALEN];
-    uint8_t destination_mac[ETH_ALEN];
+    uint32_t unix_secs;
+    uint32_t unix_nsecs;
     in_addr source_ip;
     in_addr destination_ip;
     uint16_t source_port;
@@ -101,12 +118,25 @@ struct flow_data
     uint16_t pad2;          //ZERO FIELD
 };
 
+struct netflow_header
+{
+    uint16_t version;
+    uint16_t count;
+    uint32_t sys_uptime;
+    uint32_t unix_secs;
+    uint32_t unix_nsecs;
+    uint32_t flow_sequence;
+    uint8_t engine_type;
+    uint8_t engine_id;
+    uint16_t sampling_interval;
+};
 
 
 //NAMESPACE
 //STRUCTURES
 typedef struct packet_data packet_data;
 typedef struct flow_data flow_data;
+typedef struct netflow_header netflow_header;
 
 /**
  * key_t is an unique key for a flow stored in a map
@@ -119,7 +149,8 @@ void print_flow_id(map_key_t flow_key);
 packet_data parse_packet(const struct pcap_pkthdr* header, const u_char *packet);
 map_key_t get_flow_key(packet_data pd);
 void init_flow(packet_data* packet, flow_data* flow);
-void export_flow(flow_data flow);
+void set_netflow_header(netflow_header* nf_header, uint32_t sys_uptime, uint32_t unix_nsecs, uint32_t flow_sequence);
+void export_flow(flow_data flow, uint32_t sys_uptime, uint32_t unix_secs, uint32_t unix_nsecs, int flow_sequence);
 
 
 
@@ -129,15 +160,23 @@ struct pcap_pkthdr header;
 const u_char *packet;
 char errbuf[PCAP_ERRBUF_SIZE];
 
+
+//global program arguments
+string  src_filename = DEFAULT_FILE,\
+        collector_ip = DEFAULT_COLLECTOR_IP,\
+        collector_port = DEFAULT_COLLECTOR_PORT;
+
+int     active_timer     = DEFAULT_ACTIVE_TIMER,\
+        inactive_timer   = DEFAULT_INACTIVE_TIMER,\
+        flow_cache       = DEFAULT_FLOW_CACHE;
+
+
+
 int main(int argc, char **argv) {
 
     //ARG PARSING
     //Parameter init & default set
-    string  src_filename = DEFAULT_FILE,\
-            collector_ip = DEFAULT_COLLECTOR_IP;
-    int active_timer     = DEFAULT_ACTIVE_TIMER,\
-        inactive_timer   = DEFAULT_INACTIVE_TIMER,\
-        flow_cache       = DEFAULT_FLOW_CACHE;
+
 
     int opt;
     while ((opt = getopt(argc, argv, "f:c:a:i:m:h")) != -1) {
@@ -148,7 +187,21 @@ int main(int argc, char **argv) {
                 src_filename = optarg;
                 break;
             case 'c':
-                collector_ip = optarg;
+                //parse the IP and Port values
+                try{
+                    string tmp_str = optarg;
+                    int pos = tmp_str.find_first_of(':');
+                    collector_port = tmp_str.substr(pos+1),
+                    collector_ip = tmp_str.substr(0, pos);
+                    if(stoi(collector_port) > 65535 || stoi(collector_port) < 0){
+                        cerr << "Invalid port entered: Has to be between 0 - 65535. Aborting." << endl;
+                        exit(INVALID_PORT);
+                    }
+                }
+                catch(...){
+                    cerr << "Invalid -c argument value. See -h for help." << endl;
+                    exit(INVALID_C_ARG);
+                }
                 break;
             case 'a':
                 active_timer = atoi(optarg);
@@ -171,7 +224,7 @@ int main(int argc, char **argv) {
         }
     }
     //TODO REMOVE DEBUG
-    cout << src_filename << endl << collector_ip << endl << active_timer << endl << inactive_timer << endl << flow_cache << endl;
+    cout << src_filename << endl << collector_ip << endl << collector_port << endl << active_timer << endl << inactive_timer << endl << flow_cache << endl;
 
     //open capture
     pcap_t* pcap_file = pcap_open_offline(src_filename.c_str(), errbuf);
@@ -183,19 +236,34 @@ int main(int argc, char **argv) {
     //init main flow-storing structure
     map<map_key_t, flow_data> flow_map;
 
+    //counters and time variables declaration
     int ctr = 0;
     int exp_ctr = 0;
+    bool first_packet_flag = true;
+    uint32_t sys_start_time;
+    uint32_t curr_time;
+    uint32_t unix_secs;
+    uint32_t unix_nsecs;
 
     //start reading packets
     while((packet = pcap_next(pcap_file, &header))){
-         //FIXME REMOVE FOR SHARP VERSION
-
         //get parsed packet data
         packet_data captured_packet = parse_packet(&header, packet);
         //initialize flow key
         map_key_t flow_key = get_flow_key(captured_packet);
-        //update last time stamp - virtual current time
-        uint32_t curr_time = captured_packet.time_stamp;
+
+        //update time variables with the data from last incoming packet
+        curr_time = captured_packet.time_stamp;
+        unix_secs = captured_packet.unix_secs;
+        unix_nsecs = captured_packet.unix_nsecs;
+
+        //load the device start with the first incoming packet signified by the first_packet_flag
+        if(first_packet_flag){
+            //set the start time
+            sys_start_time = captured_packet.time_stamp;
+            //disable this if statement
+            first_packet_flag = false;
+        }
 
         //go through flows and check their expiration
         for (auto it = flow_map.cbegin(), next_it = it; it != flow_map.cend(); it = next_it)
@@ -203,11 +271,12 @@ int main(int argc, char **argv) {
             ++next_it;
             if((curr_time - it->second.first_time) > (active_timer * SEC_TO_MSEC) || (curr_time - it->second.last_time > (inactive_timer * SEC_TO_MSEC))){
                 cout << "AT Erase " << curr_time - it->second.first_time << " ? " << active_timer * SEC_TO_MSEC << " IT Erase " << curr_time - it->second.last_time << " ? " << inactive_timer * SEC_TO_MSEC  << endl;
-                export_flow(it->second);
+                export_flow(it->second, sys_start_time-curr_time, unix_secs, unix_nsecs, exp_ctr);
                 flow_map.erase(it);
                 exp_ctr++;
             }
         }
+
 
         //search for a flow record in the storing map
         auto existing_flow = flow_map.find(flow_key);
@@ -215,6 +284,10 @@ int main(int argc, char **argv) {
         //Create new flow record
         if(existing_flow == flow_map.end()){
             ctr++;
+
+            if(flow_map.size() == flow_cache){
+                //TODO zde odstranit nejstarší packet
+            }
             flow_data new_flow;
             init_flow(&captured_packet, &new_flow);
             flow_map[flow_key] = new_flow;
@@ -235,24 +308,96 @@ int main(int argc, char **argv) {
     for (auto it = flow_map.cbegin(), next_it = it; it != flow_map.cend(); it = next_it)
     {
         ++next_it;
-        export_flow(it->second);
+        export_flow(it->second, sys_start_time-curr_time, unix_secs, unix_nsecs, exp_ctr);
         cout<< "END EXPORT ";
         exp_ctr++;
     }
 
     cout << "FLOWS: " << ctr << " EXPORTED: " << exp_ctr << endl;
 
-
-    /* Print its length */
-    /* And close the session */
+    //close pcap file
     pcap_close(pcap_file);
     return(0);
 }
-void export_flow(flow_data flow){
-    cout << "                      ->>> EXPORTED" << endl;
+void export_flow(flow_data flow, uint32_t sys_uptime, uint32_t unix_secs, uint32_t unix_nsecs, int flow_sequence)
+{
+    int sock;                        // socket descriptor
+    int msg_size, i;
+    struct sockaddr_in server, from; // address structures of the server and the client
+    struct hostent *servent;         // network host entry required by gethostbyname()
+    socklen_t len, fromlen;
+    char buffer[BUFFER];
+//
+//
+//    memset(&server,0,sizeof(server)); // erase the server structure
+//    server.sin_family = AF_INET;
+//
+//    // make DNS resolution of the first parameter using gethostbyname()
+    if ((servent = gethostbyname(collector_ip.c_str())) == NULL) // check the first parameter
+    errx(1,"gethostbyname() failed\n");
+//
+//    servent = gethostbyname()
+//
+//    // copy the first parameter to the server.sin_addr structure
+//    memcpy(&server.sin_addr,servent->h_addr,servent->h_length);
+//
+//    server.sin_port = htons(atoi(argv[2]));        // server port (network byte order)
+//
+//    if ((sock = socket(AF_INET , SOCK_DGRAM , 0)) == -1)   //create a client socket
+//    err(1,"socket() failed\n");
+//
+//    printf("* Server socket created\n");
+//
+//    len = sizeof(server);
+//    fromlen = sizeof(from);
+//
+//    printf("* Creating a connected UDP socket using connect()\n");
+//    // create a connected UDP socket
+//    if (connect(sock, (struct sockaddr *)&server, sizeof(server))  == -1)
+//    err(1, "connect() failed");
+//
+//    //send data to the server
+//    while((msg_size=read(STDIN_FILENO,buffer,BUFFER)) > 0)
+//    // read input data from STDIN (console) until end-of-line (Enter) is pressed
+//    // when end-of-file (CTRL-D) is received, n == 0
+//    {
+//    i = send(sock,buffer,msg_size,0);     // send data to the server
+//    if (i == -1)                   // check if data was sent correctly
+//    err(1,"send() failed");
+//    else if (i != msg_size)
+//    err(1,"send(): buffer written partially");
+//
+//    // obtain the local IP address and port using getsockname()
+//    if (getsockname(sock,(struct sockaddr *) &from, &len) == -1)
+//    err(1,"getsockname() failed");
+//
+//    printf("* Data sent from %s, port %d (%d) to %s, port %d (%d)\n",inet_ntoa(from.sin_addr), ntohs(from.sin_port), from.sin_port, inet_ntoa(server.sin_addr),ntohs(server.sin_port), server.sin_port);
+//
+//    // read the answer from the server
+//    if ((i = recv(sock,buffer, BUFFER,0)) == -1)
+//    err(1,"recv() failed");
+//    else if (i > 0){
+//    // obtain the remote IP adddress and port from the server (cf. recfrom())
+//    if (getpeername(sock, (struct sockaddr *)&from, &fromlen) != 0)
+//    err(1,"getpeername() failed\n");
+//
+//    printf("* UDP packet received from %s, port %d\n",inet_ntoa(from.sin_addr),ntohs(from.sin_port));
+//    printf("%.*s",i,buffer);                   // print the answer
+//    }
+//    }
+//    // reading data until end-of-file (CTRL-D)
+//
+//    if (msg_size == -1)
+//    err(1,"reading failed");
+//    close(sock);
+//    printf("* Closing the client socket ...\n");
+//    return 0;
 }
 
-void init_flow(packet_data* packet, flow_data* flow){
+
+
+void init_flow(packet_data* packet, flow_data* flow)
+{
     //load data from packet
     flow->source_ip = packet->source_ip;
     flow->destination_ip = packet->destination_ip;
@@ -274,6 +419,22 @@ void init_flow(packet_data* packet, flow_data* flow){
     flow->source_mask =\
     flow->destination_mask =\
     flow->pad2 = 0;
+}
+
+
+void set_netflow_header(netflow_header* nf_header, uint32_t sys_uptime, uint32_t unix_secs, uint32_t unix_nsecs, uint32_t flow_sequence)
+{
+    nf_header->version = 5;
+    nf_header->sys_uptime = sys_uptime;
+    nf_header->unix_secs = unix_secs;
+    nf_header->unix_nsecs = unix_nsecs;
+    nf_header->flow_sequence = flow_sequence;
+    //always exporting serially
+    nf_header->count = 1;
+    //zero fields
+    nf_header->engine_id =\
+    nf_header->engine_type =\
+    nf_header->sampling_interval = 0;
 }
 
 
@@ -306,17 +467,13 @@ packet_data parse_packet(const struct pcap_pkthdr* header, const u_char *packet)
     packet_data new_packet;
 
     //convert to miliseconds
-    uint32_t tm_sec = header->ts.tv_sec * 1000 + header->ts.tv_usec/1000;
+    uint32_t tm_sec = header->ts.tv_sec * 1000 + header->ts.tv_usec / 1000;
     new_packet.time_stamp = tm_sec;
+    new_packet.unix_secs = header->ts.tv_sec;
+    new_packet.unix_nsecs = header->ts.tv_usec;
 
     //init ether header struct
     struct ether_header *eth_header = (ether_header*)packet;
-    //fill MAC address
-    for(auto i = 0; i <= ETH_ALEN; i++)
-    {
-        new_packet.source_mac[i] = eth_header->ether_shost[i];
-        new_packet.destination_mac[i] = eth_header->ether_dhost[i];
-    }
 
     //fill ip data
     ip = (struct ip*)(packet + SIZE_ETHERNET);
@@ -363,7 +520,7 @@ packet_data parse_packet(const struct pcap_pkthdr* header, const u_char *packet)
  *                          active - pokud nejstarší packet 60s tak exportuj flow a pro další packety založ nový
  *                          inactive - (icmp .. )  pokud bylo spojeni inactive po urcitou dobu (inactive dobu) tak ukoncim a generuju flow
  *
-*           STRUKTURA:
+ *           STRUKTURA:
  *           1 - sniffer
  *              a) argparse: -c -> 1.1.1.1:1/localhost:1/fit.vutbr.cz:44 <- gethostbyname() -> prevod DNS
  *              b) otevrit pcap soubor -> pcap_fopen_offline(file f)
@@ -387,5 +544,20 @@ packet_data parse_packet(const struct pcap_pkthdr* header, const u_char *packet)
  *              Přidat TCP flags, packetcount, doctets
  *
  *
+ *              SYSstarttime ->> prvni packet ever proste ten uplne prvni
+ *              sysuptime = currtime - sysstarttime
+ *              TCP 105 PACKETU
+ *              first = curr - sysstart(oba milisekundy)
  *
+ *
+ *              OTAZKY
+ *
+ *              CURRENT TIME -> TYP, VELIČINA milisekundy
+ *              FIRST/LAST -> TYP, VELIČINA milisekundy
+ *              NETFLW HDR -> sec: sekundy z pakitu
+ *
+ *               //TODO FINALS: Kontorla inputu arguemntů, exporting celej. Stačí si vzít inputy, vygenerovat header a poslat
+ *
+ *
+ *               usec: mikrosec z pakitu  -- obe z tm, schovat do flow.
  * */
