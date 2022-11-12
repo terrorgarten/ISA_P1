@@ -31,17 +31,8 @@
 #include <err.h>
 
 
-//DEBUG MACRO
-#define DEBUG_BUILD 1
-#ifdef DEBUG_BUILD
-//TODO Remove
-#   define DEBUG(x) do { cout << #x << " " << x } while (0)
-#else
-#  define DEBUG(x) do {} while (0)
-#endif
-
 //DEFINITIONS
-    //ARGS
+    //ARGUMENT DEFAULTS
 #define DEFAULT_FILE "-"
 #define DEFAULT_COLLECTOR_IP "127.0.0.1"
 #define DEFAULT_COLLECTOR_PORT "2055"
@@ -61,14 +52,13 @@
 #define INVALID_IP_PROTOCOL 2
 #define INVALID_PORT 3
 #define INVALID_C_ARG 4
+#define HOST_RESOLVE_ERROR 5
 
     //EXPORT BUFFER
-#define BUFFER 1024
+#define EXPORT_BUFFER_SIZE 1024
 
 //namespace
 using namespace std;
-
-
 
 /**
  * Structure for packet/flow data
@@ -118,6 +108,11 @@ struct flow_data
     uint16_t pad2;          //ZERO FIELD
 };
 
+
+/**
+ * @name netflow_header structure
+ * @note used for generation of netflow header for export packet
+ */
 struct netflow_header
 {
     uint16_t version;
@@ -132,26 +127,25 @@ struct netflow_header
 };
 
 
-//NAMESPACE
-//STRUCTURES
+//STRUCTURE TYPEDEFS
 typedef struct packet_data packet_data;
 typedef struct flow_data flow_data;
 typedef struct netflow_header netflow_header;
 
 /**
- * key_t is an unique key for a flow stored in a map
+ * @name map_key_t
+ * @note Serves as an unique key for a flow instance stored in a flow map
  */
 typedef tuple<string, string, uint16_t, uint16_t, uint8_t> map_key_t;
 
 
-//FUNCTIONS
+//FUNCTION DECLARATIONS
 void print_flow_id(map_key_t flow_key);
 packet_data parse_packet(const struct pcap_pkthdr* header, const u_char *packet);
 map_key_t get_flow_key(packet_data pd);
 void init_flow(packet_data* packet, flow_data* flow);
-void set_netflow_header(netflow_header* nf_header, uint32_t sys_uptime, uint32_t unix_nsecs, uint32_t flow_sequence);
-void export_flow(flow_data flow, uint32_t sys_uptime, uint32_t unix_secs, uint32_t unix_nsecs, int flow_sequence);
-
+void set_netflow_header(netflow_header* nf_header, uint32_t sys_uptime, uint32_t unix_secs, uint32_t unix_nsecs, uint32_t flow_sequence);
+void export_flow(flow_data flow, uint32_t sys_uptime, uint32_t unix_secs, uint32_t unix_nsecs, uint32_t flow_sequence);
 
 
 //GLOBAL VARIABLES
@@ -159,6 +153,7 @@ pcap_t *pcap_capture;
 struct pcap_pkthdr header;
 const u_char *packet;
 char errbuf[PCAP_ERRBUF_SIZE];
+//FIXME make not global?
 
 
 //global program arguments
@@ -174,10 +169,7 @@ int     active_timer     = DEFAULT_ACTIVE_TIMER,\
 
 int main(int argc, char **argv) {
 
-    //ARG PARSING
-    //Parameter init & default set
-
-
+    //parse arguments
     int opt;
     while ((opt = getopt(argc, argv, "f:c:a:i:m:h")) != -1) {
         switch (opt) {
@@ -190,9 +182,11 @@ int main(int argc, char **argv) {
                 //parse the IP and Port values
                 try{
                     string tmp_str = optarg;
+                    //split string by ":" delimiter
                     int pos = tmp_str.find_first_of(':');
                     collector_port = tmp_str.substr(pos+1),
                     collector_ip = tmp_str.substr(0, pos);
+                    //check port validity
                     if(stoi(collector_port) > 65535 || stoi(collector_port) < 0){
                         cerr << "Invalid port entered: Has to be between 0 - 65535. Aborting." << endl;
                         exit(INVALID_PORT);
@@ -226,19 +220,19 @@ int main(int argc, char **argv) {
     //TODO REMOVE DEBUG
     cout << src_filename << endl << collector_ip << endl << collector_port << endl << active_timer << endl << inactive_timer << endl << flow_cache << endl;
 
-    //open capture
+    //open pcap file for reading
     pcap_t* pcap_file = pcap_open_offline(src_filename.c_str(), errbuf);
     if(!pcap_file){
-        cout << "Could not open the input file \"" << src_filename << "\". Please enter a valid capture file name." << endl;
+        cerr << "Could not open the input file \"" << src_filename << "\". Please enter a valid capture file name." << endl;
         return FILE_ERROR;
     }
 
-    //init main flow-storing structure
+    //init main flow-storing map
     map<map_key_t, flow_data> flow_map;
 
     //counters and time variables declaration
     int ctr = 0;
-    int exp_ctr = 0;
+    uint32_t exp_ctr = 0;
     bool first_packet_flag = true;
     uint32_t sys_start_time;
     uint32_t curr_time;
@@ -251,13 +245,12 @@ int main(int argc, char **argv) {
         packet_data captured_packet = parse_packet(&header, packet);
         //initialize flow key
         map_key_t flow_key = get_flow_key(captured_packet);
-
         //update time variables with the data from last incoming packet
         curr_time = captured_packet.time_stamp;
         unix_secs = captured_packet.unix_secs;
         unix_nsecs = captured_packet.unix_nsecs;
 
-        //load the device start with the first incoming packet signified by the first_packet_flag
+        //load the device start time with the first incoming packet signified by the first_packet_flag
         if(first_packet_flag){
             //set the start time
             sys_start_time = captured_packet.time_stamp;
@@ -266,12 +259,15 @@ int main(int argc, char **argv) {
         }
 
         //go through flows and check their expiration
-        for (auto it = flow_map.cbegin(), next_it = it; it != flow_map.cend(); it = next_it)
-        {
+        for (auto it = flow_map.cbegin(), next_it = it; it != flow_map.cend(); it = next_it) {
             ++next_it;
-            if((curr_time - it->second.first_time) > (active_timer * SEC_TO_MSEC) || (curr_time - it->second.last_time > (inactive_timer * SEC_TO_MSEC))){
-                cout << "AT Erase " << curr_time - it->second.first_time << " ? " << active_timer * SEC_TO_MSEC << " IT Erase " << curr_time - it->second.last_time << " ? " << inactive_timer * SEC_TO_MSEC  << endl;
-                export_flow(it->second, sys_start_time-curr_time, unix_secs, unix_nsecs, exp_ctr);
+            //check exportation, if the flow is past expiracy, export it
+            if ((curr_time - it->second.first_time) > (active_timer * SEC_TO_MSEC) ||
+                (curr_time - it->second.last_time > (inactive_timer * SEC_TO_MSEC))) {
+                cout << "AT Erase " << curr_time - it->second.first_time << " ? " << active_timer * SEC_TO_MSEC
+                     << " IT Erase " << curr_time - it->second.last_time << " ? " << inactive_timer * SEC_TO_MSEC
+                     << endl;
+                export_flow(it->second, sys_start_time - curr_time, unix_secs, unix_nsecs, exp_ctr);
                 flow_map.erase(it);
                 exp_ctr++;
             }
@@ -281,10 +277,9 @@ int main(int argc, char **argv) {
         //search for a flow record in the storing map
         auto existing_flow = flow_map.find(flow_key);
 
-        //Create new flow record
+        //create new flow record
         if(existing_flow == flow_map.end()){
             ctr++;
-
             if(flow_map.size() == flow_cache){
                 //TODO zde odstranit nejstarší packet
             }
@@ -304,11 +299,12 @@ int main(int argc, char **argv) {
             print_flow_id(flow_key);
         }
     }
-    //export the remaining flows
+
+    //reading has finished, now export the remaining flows
     for (auto it = flow_map.cbegin(), next_it = it; it != flow_map.cend(); it = next_it)
     {
         ++next_it;
-        export_flow(it->second, sys_start_time-curr_time, unix_secs, unix_nsecs, exp_ctr);
+        export_flow(it->second, (sys_start_time-curr_time), unix_secs, unix_nsecs, exp_ctr);
         cout<< "END EXPORT ";
         exp_ctr++;
     }
@@ -319,79 +315,55 @@ int main(int argc, char **argv) {
     pcap_close(pcap_file);
     return(0);
 }
-void export_flow(flow_data flow, uint32_t sys_uptime, uint32_t unix_secs, uint32_t unix_nsecs, int flow_sequence)
+void export_flow(flow_data flow, uint32_t sys_uptime, uint32_t unix_secs, uint32_t unix_nsecs, uint32_t flow_sequence)
 {
+    netflow_header nf_header;
+    set_netflow_header(&nf_header, sys_uptime, unix_secs, unix_nsecs, flow_sequence);
+
     int sock;                        // socket descriptor
     int msg_size, i;
-    struct sockaddr_in server, from; // address structures of the server and the client
+    struct sockaddr_in server; // address structures of the server and the client
     struct hostent *servent;         // network host entry required by gethostbyname()
     socklen_t len, fromlen;
-    char buffer[BUFFER];
-//
-//
-//    memset(&server,0,sizeof(server)); // erase the server structure
-//    server.sin_family = AF_INET;
-//
-//    // make DNS resolution of the first parameter using gethostbyname()
-    if ((servent = gethostbyname(collector_ip.c_str())) == NULL) // check the first parameter
-    errx(1,"gethostbyname() failed\n");
-//
-//    servent = gethostbyname()
-//
-//    // copy the first parameter to the server.sin_addr structure
-//    memcpy(&server.sin_addr,servent->h_addr,servent->h_length);
-//
-//    server.sin_port = htons(atoi(argv[2]));        // server port (network byte order)
-//
-//    if ((sock = socket(AF_INET , SOCK_DGRAM , 0)) == -1)   //create a client socket
-//    err(1,"socket() failed\n");
-//
-//    printf("* Server socket created\n");
-//
-//    len = sizeof(server);
-//    fromlen = sizeof(from);
-//
-//    printf("* Creating a connected UDP socket using connect()\n");
-//    // create a connected UDP socket
-//    if (connect(sock, (struct sockaddr *)&server, sizeof(server))  == -1)
-//    err(1, "connect() failed");
-//
-//    //send data to the server
-//    while((msg_size=read(STDIN_FILENO,buffer,BUFFER)) > 0)
-//    // read input data from STDIN (console) until end-of-line (Enter) is pressed
-//    // when end-of-file (CTRL-D) is received, n == 0
-//    {
-//    i = send(sock,buffer,msg_size,0);     // send data to the server
-//    if (i == -1)                   // check if data was sent correctly
-//    err(1,"send() failed");
-//    else if (i != msg_size)
-//    err(1,"send(): buffer written partially");
-//
-//    // obtain the local IP address and port using getsockname()
-//    if (getsockname(sock,(struct sockaddr *) &from, &len) == -1)
-//    err(1,"getsockname() failed");
-//
-//    printf("* Data sent from %s, port %d (%d) to %s, port %d (%d)\n",inet_ntoa(from.sin_addr), ntohs(from.sin_port), from.sin_port, inet_ntoa(server.sin_addr),ntohs(server.sin_port), server.sin_port);
-//
-//    // read the answer from the server
-//    if ((i = recv(sock,buffer, BUFFER,0)) == -1)
-//    err(1,"recv() failed");
-//    else if (i > 0){
-//    // obtain the remote IP adddress and port from the server (cf. recfrom())
-//    if (getpeername(sock, (struct sockaddr *)&from, &fromlen) != 0)
-//    err(1,"getpeername() failed\n");
-//
-//    printf("* UDP packet received from %s, port %d\n",inet_ntoa(from.sin_addr),ntohs(from.sin_port));
-//    printf("%.*s",i,buffer);                   // print the answer
-//    }
-//    }
-//    // reading data until end-of-file (CTRL-D)
-//
-//    if (msg_size == -1)
-//    err(1,"reading failed");
-//    close(sock);
-//    printf("* Closing the client socket ...\n");
-//    return 0;
+    char buffer[EXPORT_BUFFER_SIZE];
+
+
+    memset(&server,0,sizeof(server)); // erase the server structure
+    server.sin_family = AF_INET;
+
+    // make DNS resolution of the first parameter using gethostbyname()
+    if ((servent = gethostbyname(collector_ip.c_str())) == NULL) { // check the first parameter
+        err(HOST_RESOLVE_ERROR, "Hostname resolution failed during flow export\n");
+    }
+
+    // copy the first parameter to the server.sin_addr structure
+    memcpy(&server.sin_addr,servent->h_addr,servent->h_length);
+
+    server.sin_port = htons(stoi(collector_port));        // server port (network byte order)
+
+    if ((sock = socket(AF_INET , SOCK_DGRAM , 0)) == -1){
+        //create a client socket
+        err(1,"socket() failed\n");
+    }
+    len = sizeof(server);
+    printf("* Creating a connected UDP socket using connect()\n");
+
+    // create a connected UDP socket
+    if (connect(sock, (struct sockaddr *)&server, sizeof(server))  == -1){
+        err(1, "connect() failed");
+    }
+
+    memcpy(buffer, &nf_header, sizeof(nf_header));
+    mempcpy(buffer+sizeof(nf_header), &flow, sizeof(flow));
+
+    i = send(sock,buffer,(sizeof(nf_header) + sizeof(flow)),0);     // send data to the server
+    if (i == -1)                   // check if data was sent correctly
+            err(1,"send() failed");
+    else if (i != msg_size)
+        err(1,"send(): buffer written partially");
+
+    close(sock);
+    printf("* Closing the client socket ...\n");
 }
 
 
