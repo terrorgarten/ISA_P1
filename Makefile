@@ -9,7 +9,7 @@ SOURCES=$(wildcard *.cpp)
 OBJECTS=$(SOURCES:.cpp=.o)
 BINS=$(SOURCES:.cpp=)
 
-CXXFLAGS+= -lpcap
+CXXFLAGS+= -Wall -Wextra -pedantic -lpcap
 
 all: $(BINS)
 

@@ -232,7 +232,6 @@ int main(int argc, char **argv) {
                     <<"-----------------------------------------------------" << endl;
 
     //declare packet parsing variables
-    pcap_t *pcap_capture;
     struct pcap_pkthdr header;
     const u_char *packet;
     char errbuf[PCAP_ERRBUF_SIZE];
@@ -285,8 +284,8 @@ int main(int argc, char **argv) {
         for (auto it = flow_map.cbegin(), next = it; it != flow_map.cend(); it = next) {
             ++next;
             //check exportation, if the flow is past expiracy, export it
-            if ((sys_up_time - it->second.first_time) > (active_timer * SEC_TO_MSEC) ||
-                (sys_up_time - it->second.last_time > (inactive_timer * SEC_TO_MSEC))) {
+            if ((sys_up_time - it->second.first_time) > (uint32_t)(active_timer * SEC_TO_MSEC) ||
+                (sys_up_time - it->second.last_time > (uint32_t)(inactive_timer * SEC_TO_MSEC))) {
                 //export & erase the flow
                 export_flow(it->second, sys_up_time, unix_secs, unix_nsecs, exp_ctr);
                 flow_map.erase(it);
@@ -301,7 +300,7 @@ int main(int argc, char **argv) {
         if(existing_flow == flow_map.end()){
             ctr++;
             //check for cache space and remove the latest packet if the cache has been filled
-            if(flow_map.size() == flow_cache){
+            if((int)flow_map.size() == flow_cache){
                 //find the oldest flow key
                 map_key_t oldest_key = get_oldest_flow_key(&flow_map);
                 //look it up
@@ -467,7 +466,7 @@ void export_flow(flow_data flow, uint32_t sys_uptime, uint32_t unix_secs, uint32
     if (i == -1) {                   // check if data was sent correctly
         err(PACKET_SEND_FAILED, "send() failed");
     }
-    else if (i != (nf_header_size + flow_size)) {
+    else if (i != (int)(nf_header_size + flow_size)) {
         err(PARTIAL_BUFFER_WRITE, "send(): buffer written partially");
     }
     close(sock);
@@ -577,6 +576,7 @@ packet_data parse_packet(const struct pcap_pkthdr* header, const u_char *packet)
             new_packet.source_port = 0;
             new_packet.destination_port = 0;
             new_packet.tcp_flags = 0;
+            break;
         default:
             cerr << "Invalid IP protocol header encountered. The input file might be corrupt." << endl;
             exit(INVALID_IP_PROTOCOL);
