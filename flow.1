@@ -3,7 +3,7 @@
 \fBflow\fR - generates NetFlow V5 packets from .pcap web traffic capture files and exports it to the given NetFlow collector.
 .SH SYNOPSIS
 .B flow
-[\-f <filename>][\-c <netflow_collector>:<port>]][\-a <active_timer>][\-i <inactive_timer>][\-m <cache_size>]
+[\-f <file>][\-c <collector_ip>:<port>]][\-a <active_timer>][\-i <inactive_timer>][\-m <cache_size>]
 .SH DESCRIPTION
 Flow is a NetFlow V5 generator meant to be used with packet capture files (.pcap). The program supports UDP, TCP and ICMP packets. Flow takes an input file under the -f argument flag (see lower). Without the
 -f flag, the program reads input from STDIN, where you can redirect said .pcap file. Other ways of input are not supported. Flow then begins to analyze the packets
