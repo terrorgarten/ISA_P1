@@ -1,6 +1,6 @@
 /**
  * @file flow.cpp - Netflow generator for .pcap files
- * @author Matěj Konopí, FIT BUT
+ * @author Matěj Konopík, FIT BUT
  * @date November 14th 2022
  */
 
@@ -309,6 +309,9 @@ int main(int argc, char **argv) {
             init_flow(&captured_packet, &new_flow, sys_up_time);
             //add the flow to the flow map
             flow_map[flow_key] = new_flow;
+            cout << "Flow added: \t";
+            print_flow_id(get_flow_key(captured_packet));
+
         }
         //Update flow record
         else{
@@ -316,11 +319,14 @@ int main(int argc, char **argv) {
             existing_flow->second.ip_header_total_size += captured_packet.ip_len;
             existing_flow->second.packet_count++;
             existing_flow->second.tcp_flags |= captured_packet.tcp_flags;
+            cout << "Flow updated: \t";
+            print_flow_id(existing_flow->first);
             if(captured_packet.tcp_flags & TH_RST || captured_packet.tcp_flags & TH_FIN){
                 export_flow(existing_flow->second, sys_up_time, unix_secs, unix_nsecs, exp_ctr);
                 flow_map.erase(existing_flow);
                 exp_ctr++;
             }
+
         }
     }
 
@@ -358,6 +364,26 @@ map_key_t get_oldest_flow_key(map<map_key_t, flow_data>* flow_map){
     }
     return oldest_key;
 }
+
+/**
+ * Prints flow identification
+ * @param flow_key flow key to print
+ */
+void print_flow_id(map_key_t flow_key){
+    cout << get<0>(flow_key) << "\t" << get<1>(flow_key) << "\t" << get<2>(flow_key) << "\t" << get<3>(flow_key) << "\t" << endl;
+}
+
+/**
+ * Creates unique flow identifier
+ * @param pd packet
+ * @return unique key
+ */
+map_key_t get_flow_key(packet_data pd){
+    string source_ip = inet_ntoa(pd.source_ip);
+    string destination_ip = inet_ntoa(pd.destination_ip);
+    map_key_t key(source_ip, destination_ip, pd.source_port, pd.destination_port, pd.ip_protocol);
+    return key;
+};
 
 /**
  * Exports the flow to the collector
@@ -430,7 +456,6 @@ void export_flow(flow_data flow, uint32_t sys_uptime, uint32_t unix_secs, uint32
 
     //send the buffer to collector
     i = send(sock,buffer,(nf_header_size + flow_size),0);     // send data to the server
-    cout << i << " - " << nf_header_size+flow_size <<endl;
     if (i == -1) {                   // check if data was sent correctly
         err(PACKET_SEND_FAILED, "send() failed");
     }
