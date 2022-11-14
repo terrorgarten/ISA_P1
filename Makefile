@@ -1,16 +1,24 @@
+#FILE: Makefile for flow.cpp
+#AUTHOR: Matěj Konopík
+#DATE: November 14th 2022
+#COPYRIGHT DISCLAIMER:	This makefile was inspired by florin on stack overflow (https://stackoverflow.com/users/18308/florin)
+#						From the thread https://stackoverflow.com/questions/287259/minimum-c-make-file-for-linux
+
+
 SOURCES=$(wildcard *.cpp)
 OBJECTS=$(SOURCES:.cpp=.o)
-DEPS=$(SOURCES:.cpp=.d)
 BINS=$(SOURCES:.cpp=)
 
-CFLAGS+=-MMD -lpcap
-CXXFLAGS+=-MMD -lpcap
+CXXFLAGS+= -lpcap
 
 all: $(BINS)
 
 .PHONY: clean
 
 clean:
-	$(RM) $(OBJECTS) $(DEPS) $(BINS)
+	$(RM) $(OBJECTS) $(BINS)
+
+run: all
+	./$(BINS)
 
 -include $(DEPS)
