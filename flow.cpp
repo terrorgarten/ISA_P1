@@ -13,8 +13,10 @@
 #include <iostream>
 #include <map>
 #include <string.h>
+#define __FAVOR_BSD
 #include <netinet/tcp.h>
 #include <netinet/ip.h>
+#define __FAVOR_BSD
 #include <netinet/udp.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -571,6 +573,10 @@ packet_data parse_packet(const struct pcap_pkthdr* header, const u_char *packet)
             new_packet.destination_port = udp_hdr->uh_dport;
             new_packet.tcp_flags = 0;
             break;
+        case IPPROTO_ICMP:
+            new_packet.source_port = 0;
+            new_packet.destination_port = 0;
+            new_packet.tcp_flags = 0;
         default:
             cerr << "Invalid IP protocol header encountered. The input file might be corrupt." << endl;
             exit(INVALID_IP_PROTOCOL);
