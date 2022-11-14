@@ -1,6 +1,6 @@
 /**
  * @file flow.cpp - Netflow generator for .pcap files
- * @author Matěj Konopík, FIT BUT
+ * @author Matěj Konopí, FIT BUT
  * @date November 14th 2022
  */
 
@@ -205,7 +205,8 @@ int main(int argc, char **argv) {
                 flow_cache = atoi(optarg);
                 break;
             case 'h':
-                cout << "USAGE:" << endl << "-f\t Set source file" << endl << "-c\t Set NetFlow collector IP" << endl << "-a\t Set active timer" << "-i\t Set inactive timer" << endl << "-m\t Set cache memory size" << endl;
+                cout << "USAGE:" << endl << "-f\t Set source file" << endl << "-c\t Set NetFlow collector IP" << endl << "-a\t Set active timer"<< endl << "-i\t Set inactive timer" << endl << "-m\t Set cache memory size" << endl << endl << "Alternatively, see \"man -l flow.1\"" <<endl ;
+                return(0);
                 break;
             case '?':
                 cout << "Invalid argument has been passed, commencing with default values. Please use -h to print usage." << endl;
@@ -224,6 +225,10 @@ int main(int argc, char **argv) {
             << "Max cache size:\t" << flow_cache << endl\
             << "--------------------------" << endl;
 
+    //print header for verbose prints
+    cout    << endl <<"Status\t\t    src ip \t\t\tdst ip\t\t\ts.port  d.port" << endl\
+                    <<"-----------------------------------------------------" << endl;
+
     //declare packet parsing variables
     pcap_t *pcap_capture;
     struct pcap_pkthdr header;
@@ -241,7 +246,7 @@ int main(int argc, char **argv) {
     map<map_key_t, flow_data> flow_map;
 
     //counters and time variables declaration
-    int ctr, packet_ctr = 0;
+    int ctr = 0, packet_ctr = 0;
     uint32_t exp_ctr = 0;
     uint32_t sys_start_time;
     uint32_t curr_time;
@@ -338,7 +343,8 @@ int main(int argc, char **argv) {
         exp_ctr++;
     }
 
-    cout<< "----FINAL STATISTICS----" << endl\
+    cout<< endl\
+        << "----FINAL STATISTICS----" << endl\
         << "Flows: " << ctr << " Exported: " << exp_ctr << endl\
         << "Packets: " << packet_ctr << endl\
         << "------------------------" << endl;
@@ -370,7 +376,7 @@ map_key_t get_oldest_flow_key(map<map_key_t, flow_data>* flow_map){
  * @param flow_key flow key to print
  */
 void print_flow_id(map_key_t flow_key){
-    cout << get<0>(flow_key) << "\t" << get<1>(flow_key) << "\t" << get<2>(flow_key) << "\t" << get<3>(flow_key) << "\t" << endl;
+    cout << get<0>(flow_key) << "\t" << get<1>(flow_key) << "\t" << get<2>(flow_key) << "\t" << get<3>(flow_key) << endl;
 }
 
 /**
