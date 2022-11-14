@@ -390,7 +390,7 @@ map_key_t get_flow_key(packet_data pd){
     string destination_ip = inet_ntoa(pd.destination_ip);
     map_key_t key(source_ip, destination_ip, pd.source_port, pd.destination_port, pd.ip_protocol);
     return key;
-};
+}
 
 /**
  * Exports the flow to the collector
