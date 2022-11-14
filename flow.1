@@ -1,0 +1,39 @@
+.TH FLOW 1
+.SH NAME
+\fBflow\fR - generates NetFlow V5 packets from .pcap web traffic capture files and exports it to the given NetFlow collector.
+.SH SYNOPSIS
+.B flow
+[\-f <filename>][\-c <netflow_collector>:<port>]][\-a <active_timer>][\-i <inactive_timer>][\-m <cache_size>]
+.SH DESCRIPTION
+Flow is a NetFlow V5 generator meant to be used with packet capture files (.pcap). The program supports UDP, TCP and ICMP packets. Flow takes an input file under the -f argument flag (see lower). Without the
+-f flag, the program reads input from STDIN, where you can redirect said .pcap file. Other ways of input are not supported. Flow then begins to analyze the packets
+from the supplied capture, creates flows based on remaining program arguments and exports the flows to a NetFlow collector IP specified via -c argument.
+If the collector is unavailable but the connection is established successfully, the program still works normally. During the process, status messages are printed to STDOUT.
+.SH OPTIONS
+.TP
+.BR \-f \fI\fR
+Specifies input file path.
+Default: STDIN
+.TP
+.BR \-c\fI\fR
+Specifies collector IP address and port as \fBcollector_ip:port\fR.
+Default: 127.0.0.0:2055
+.TP
+.BR \-a\fI\fR
+Specifies the active timer in seconds. This timer starts with the first packet of the flow and once it runs out, the flow gets exported.
+Default: 60 [seconds]
+.TP
+.BR \-i\fI\fR
+Specifies the inactive timer in seconds. Inactive timer runs out when a flow has not had new incoming packets for this given time interval. Once this triggers, the flow gets exported.
+Default: 10 [seconds]
+.TP
+.BR \-m\fI\fR
+Specifies the maximum count of flows in the program's cache memory.
+Default: 1024 [flows]
+.TP
+.BR \-h\fI\fR
+Prints help
+.SH NOTES
+This program was created as an university project by Matěj Konopík for FIT BUT.
+.SH COPYRIGHT
+Matěj Konopík, FIT BUT, 2022
